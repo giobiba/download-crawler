@@ -1,16 +1,11 @@
 import logging
-import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
 import os
 import json
-from http.cookies import SimpleCookie
 from datetime import datetime
 from pathlib import Path
 import requests
-
-from selenium import webdriver
-from selenium.webdriver.common.keys import Keys
 
 
 def remove_control(line):
@@ -68,13 +63,10 @@ class Crawler:
         """
         self.visited_urls = []
         self.accepted_domains = get_domains(accepted_domains, urls)
-
         self.urls_to_visit = urls
         # contains the sizes of the files that are to be downloaded for comparison with already existing local files
         self.sizes = dict()
-        self.downloaded_links = []
         self.download_folder = download_folder
-
         self.verify = verify
         self.session = requests.session()
         self.cookies = dict()
@@ -176,40 +168,47 @@ class Crawler:
                     self.visited_urls.append(url)
             # otherwise this url is downloaded locally
             else:
-                # check if it hasn't been downloaded by the current program
-                if url not in self.downloaded_links and url not in self.urls_to_visit:
-                    logging.info(f'Downloading: {url}')
-                    parsed_url = urlparse(url)
+                # skip if the url doesn't match the given regex pattern
+                if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(url)):
+                    logging.info(f'Skipped url: {url}')
+                    continue
 
-                    # determine where to download the file
-                    download_loc = self.download_folder + parsed_url.path
+                logging.info(f'Downloading: {url}')
+                parsed_url = urlparse(url)
 
-                    try:
-                        # try retrieving the local size of the file
-                        f_size = str(os.path.getsize(download_loc))
-                    except Exception:
-                        # and if it doesn't exist we use a default value
-                        f_size = 'Doesn\'t exist'
-                    finally:
-                        logging.info(f'Local size: {f_size}; Server size: {self.sizes.get(url)}')
+                # determine where to download the file
+                download_loc = self.download_folder + parsed_url.path
 
-                    # check if the file doesn't exist or has different size from the one found on the site
-                    if not os.path.isfile(download_loc) or f_size != self.sizes.get(url):
-                        # create folder for the download location
-                        if not os.path.exists(dir_path := os.path.dirname(download_loc)):
-                            os.makedirs(dir_path)
-                            os.chmod(dir_path, 666)
+                logging.info(f'Download location for {url} is {download_loc}')
 
-                        # download from the url and write it locally
-                        res = self.session.get(url, verify=self.verify, cookies=self.cookies)
-                        self.cookies = res.cookies
+                try:
+                    # try retrieving the local size of the file
+                    f_size = str(os.path.getsize(download_loc))
+                except Exception:
+                    # and if it doesn't exist we use a default value
+                    f_size = 'Doesn\'t exist'
+                finally:
+                    logging.info(f'Local size: {f_size}; Server size: {self.sizes.get(url)}')
 
-                        open(download_loc, 'wb').write(res.content)
-                        logging.info(f'Finished downloading: {url}')
-                        # add to the already downloaded list
-                        self.downloaded_links.append(url)
-                    else:
-                        logging.info(f'File already exists: {url}')
+                # check if the file doesn't exist or has different size from the one found on the site
+                if not os.path.isfile(download_loc) or f_size != self.sizes.get(url):
+                    # create folder for the download location
+                    if not os.path.exists(dir_path := os.path.dirname(download_loc)):
+                        os.makedirs(dir_path)
+                        os.chmod(dir_path, 666)
+
+                    # download from the url and write it locally
+                    res = self.session.get(url, verify=self.verify, cookies=self.cookies)
+                    self.cookies = res.cookies
+
+                    with open(download_loc, 'wb') as f:
+                        for chunk in res.iter_content(chunk_size=8096):
+                            if chunk:
+                                f.write(chunk)
+                    logging.info(f'Finished downloading: {url}')
+                else:
+                    logging.info(f'File already exists: {url}')
+            self.visited_urls.append(url)
 
 if __name__ == '__main__':
     config = json.load(open('config.json'))
@@ -230,7 +229,8 @@ if __name__ == '__main__':
     Crawler(urls=config["urls"],
             accepted_domains=config["accepted_domains"],
             download_folder=config["download_folder"],
-            verify=config["verify"]).run()
+            verify=config["verify"],
+            regex=config["regex"]).run()
 
 
 

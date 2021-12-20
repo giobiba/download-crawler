@@ -1,14 +1,11 @@
 import logging
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 import os
 import json
-from http.cookies import SimpleCookie
 from datetime import datetime
 from pathlib import Path
-from requests_html import HTMLSession
 import requests
+import re
 
 
 def get_domains(accepted_domains, urls):
@@ -23,7 +20,7 @@ def get_domains(accepted_domains, urls):
 
 
 class Crawler:
-    def __init__(self, urls=[], accepted_domains=[], download_folder='download/', verify=True, username='',password='', login=True, login_url='', download_url_path=''):
+    def __init__(self, urls=[], accepted_domains=[], download_folder='download/', verify=True, username='',password='', login=True, login_url='', download_url_path='', regex=''):
         """Constructs all necessary atributes, and generates the environment for the crawler
 
         Parameters
@@ -45,9 +42,9 @@ class Crawler:
         self.urls_to_visit = urls
         self.accepted_domains = get_domains(accepted_domains, urls)
         self.download_url_path = download_url_path
-        self.downloaded_links = []
         self.download_folder = download_folder
         self.verify = verify
+        self.re_prog = re.compile(regex)
         self.session = requests.session()
         self.head_headers = {
                 'X-Requested-With': 'XMLHttpRequest',
@@ -143,10 +140,17 @@ class Crawler:
                     new_url = url + "/" + child.get("name")
                     self.add_url_to_visit(new_url, child.get('size'), child.get('folder'))
             else:
+                # skip if the url doesn't match the given regex pattern
+                if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(url)):
+                    logging.info(f'Skipped url: {url}')
+                    continue
+
                 logging.info(f'Downloading file at: {url}')
                 # construct the download path and the download folder
                 path = f'{self.download_url_path}?repoKey={json_text["repo"]}&path={json_text["path"].replace("/", "%252F")}'
-                download_loc = self.download_folder + "/" + json_text["path"]
+                download_loc = self.download_folder + os.path.basename(json_text["path"])
+
+                logging.info(f'Download location for {url} is {download_loc}')
 
                 try:
                     # try retrieving the local size of the file
@@ -168,13 +172,14 @@ class Crawler:
                     res = self.session.get(path, verify=self.verify, cookies=self.cookies)
                     self.cookies = res.cookies
 
-                    open(download_loc, 'wb').write(res.content)
+                    with open(download_loc, 'wb') as f:
+                        for chunk in res.iter_content(chunk_size=8096):
+                            if chunk:
+                                f.write(chunk)
                     logging.info(f'Finished downloading: {path}')
-                    # add to the already downloaded list
-                    self.downloaded_links.append(url)
                 else:
                     logging.info(f'File already exists: {path}')
-
+            self.visited_urls.append(url)
 
 if __name__ == '__main__':
     config = json.load(open('config.json'))
@@ -195,10 +200,11 @@ if __name__ == '__main__':
     Crawler(urls=config["urls"],
             accepted_domains=config["accepted_domains"],
             download_folder=config["download_folder"],
-            verify=False,
+            verify=config["verify"],
             username=config["username"],
             password=config["password"],
             login=config["login"],
             login_url=config["login_url"],
-            download_url_path=config["download_url"]).run()
+            download_url_path=config["download_url"],
+            regex=config["regex"]).run()
 
