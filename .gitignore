@@ -1,4 +1,4 @@
 config.json
-debug.log
+*.log
 __pychache__/
 .idea/
