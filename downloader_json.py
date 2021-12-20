@@ -6,6 +6,24 @@ from datetime import datetime
 from pathlib import Path
 import requests
 import re
+import signal
+import sys
+import subprocess
+
+
+def add_unique_postfix(fn):
+    if not os.path.exists(fn):
+        return fn
+
+    path, name = os.path.split(fn)
+    name, ext = os.path.splitext(name)
+
+    make_fn = lambda i: os.path.join(path, '%s(%d)%s' % (name, i, ext))
+
+    for i in range(2, sys.maxsize):
+        uni_fn = make_fn(i)
+        if not os.path.exists(uni_fn):
+            return uni_fn
 
 
 def get_domains(accepted_domains, urls):
@@ -36,8 +54,8 @@ class Crawler:
             login: bool
                 if login is true the crawler will try to authentificate with username and password at the login_url
         """
+        self.flag = False
         self.visited_urls = []
-        self.sizes = dict()
         self.is_folder = dict()
         self.urls_to_visit = urls
         self.accepted_domains = get_domains(accepted_domains, urls)
@@ -75,6 +93,21 @@ class Crawler:
             self.body = ''
             self.headers = ''
 
+        self.meta_path = self.download_folder + "meta.json"
+        self.meta_data = json.loads("{}")
+        self.temp_meta_data = json.loads("{}")
+        # open the json metadata file, if it doesn't exist create it
+        if not os.path.exists(self.meta_path):
+            Path(self.meta_path).touch(666, exist_ok=True)
+            os.chmod(self.meta_path, 666)
+        else:
+            self.meta_data = json.loads(open(self.meta_path).read() or "{}")
+
+        def signal_handler(sig, frame):
+            self.flag = True
+
+        signal.signal(signal.SIGINT, signal_handler)
+
     def download_url(self, url):
         """Used to retrieve the html of the url param
 
@@ -95,7 +128,7 @@ class Crawler:
 
         return res.text, res.status_code
 
-    def add_url_to_visit(self, url, size, is_folder):
+    def add_url_to_visit(self, url, size, is_folder, last_modified, name, curr_path):
         """When a url is to be added it verifies if it's domain is in the list of acceptable domains
         and if it hasn't been visited, or hasn't been added to the urls_to_visit list
 
@@ -107,20 +140,59 @@ class Crawler:
             if the url contains a file, this parameter holds its size
         is_folder: bool
             if the url is a json page or not
+        last_modified: str
+            last time the file was modified on the server
         """
+        logging.info(f'Adding: {url}')
         domain ='{uri.scheme}://{uri.netloc}/'.format(uri=urlparse(url))
 
         if url not in self.visited_urls and url not in self.urls_to_visit and domain in self.accepted_domains:
-            self.urls_to_visit.append(url)
-            self.sizes[url] = size
-            self.is_folder[url] = is_folder
+            path = curr_path + "/" + name
+            self.is_folder[path] = is_folder
+
+            if is_folder:
+                self.urls_to_visit.append(url)
+            else:
+
+                logging.info(f"Comparing server and local file {path}")
+                logging.info(f"Server Last Modified: {last_modified}")
+                logging.info(f"Server Size: {size}")
+                if self.meta_data.get(path) is not None:
+                    logging.info(f"Client Last Modified: {self.meta_data[path].get('lastModified')}")
+                    logging.info(f"Client Size : {self.meta_data[path].get('size')}")
+
+                if self.meta_data.get(path) is None or (last_modified != self.meta_data[path].get("lastModified") or size != self.meta_data[path].get("size")):
+                    self.urls_to_visit.append(url)
+
+                    if self.temp_meta_data.get(path) is None:
+                        self.temp_meta_data[path] = dict()
+
+                    if self.meta_data.get(path) is None:
+                        self.temp_meta_data[path]["name"] = add_unique_postfix(name)
+                    else:
+                        self.temp_meta_data[path]["name"] = self.meta_data[path]["name"]
+
+                    self.temp_meta_data[path]["size"] = size
+                    self.temp_meta_data[path]["lastModified"] = last_modified
+                else:
+                    logging.info(f"File {path} already exists, with the same lastModified and size")
+
+    def download_and_save(self, url, download_loc):
+        logging.info(f"Downloading from: {url}")
+        res = self.session.get(url, verify=self.verify, cookies=self.cookies)
+        self.cookies = res.cookies
+        logging.info(f"Finished downloading from: {url}, starting upload")
+
+        with open(download_loc, 'wb') as f:
+            for chunk in res.iter_content(chunk_size=int(1e+7)):
+                if chunk:
+                    f.write(chunk)
+        logging.info(f"Finished upload from: {url}")
 
     def run(self):
-        """ Main function of the crawler that contains most of the logic necessary for the crawl
-                """
-
+        """ Main function of the crawler that contains most of the logic necessary for the crawl"""
         # a breadth first search in the queue of urls, starting with the urls given in the constructor of the class.
-        while self.urls_to_visit:
+        while self.urls_to_visit and not self.flag:
             # get the next url to explore
             url = self.urls_to_visit.pop(0)
             # retrieve the body and the status code of the url
@@ -138,48 +210,28 @@ class Crawler:
                 # loop through all the children of the folder and add them to the url_to_visit list
                 for child in json_text.get("children"):
                     new_url = url + "/" + child.get("name")
-                    self.add_url_to_visit(new_url, child.get('size'), child.get('folder'))
+                    self.add_url_to_visit(new_url, child.get('size'), child.get('folder'), child.get('lastModified'), child.get('name'), json_text["path"])
             else:
                 # skip if the url doesn't match the given regex pattern
                 if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(url)):
                     logging.info(f'Skipped url: {url}')
                     continue
 
-                logging.info(f'Downloading file at: {url}')
                 # construct the download path and the download folder
-                path = f'{self.download_url_path}?repoKey={json_text["repo"]}&path={json_text["path"].replace("/", "%252F")}'
-                download_loc = self.download_folder + os.path.basename(json_text["path"])
+                durl = f'{self.download_url_path}?repoKey={json_text["repo"]}&path={json_text["path"].replace("/", "%252F")}'
+                download_loc = self.download_folder + self.temp_meta_data[path := json_text["path"]]["name"]
 
-                logging.info(f'Download location for {url} is {download_loc}')
+                self.download_and_save(durl, download_loc)
 
-                try:
-                    # try retrieving the local size of the file
-                    f_size = str(os.path.getsize(download_loc))
-                except Exception:
-                    # and if it doesn't exist we use a default value
-                    f_size = 'Doesn\'t exist'
-                finally:
-                    logging.info(f'Local size: {f_size}; Server size: {self.sizes.get(url)}')
+                self.meta_data[path] = self.temp_meta_data[path].copy()
+                del self.temp_meta_data[path]
 
-                # check if the file doesn't exist or has different size from the one found on the site
-                if not os.path.isfile(download_loc) or f_size != self.sizes.get(url):
-                    # create folder for the download location
-                    if not os.path.exists(dir_path := os.path.dirname(download_loc)):
-                        os.makedirs(dir_path)
-                        os.chmod(dir_path, 666)
-
-                    # download from the url and write it locally
-                    res = self.session.get(path, verify=self.verify, cookies=self.cookies)
-                    self.cookies = res.cookies
-
-                    with open(download_loc, 'wb') as f:
-                        for chunk in res.iter_content(chunk_size=8096):
-                            if chunk:
-                                f.write(chunk)
-                    logging.info(f'Finished downloading: {path}')
-                else:
-                    logging.info(f'File already exists: {path}')
             self.visited_urls.append(url)
+
+        if self.flag:
+            open(self.meta_path, "w").write(json.dumps(self.meta_data))
+            sys.exit(0)
+
 
 if __name__ == '__main__':
     config = json.load(open('config.json'))
@@ -196,8 +248,9 @@ if __name__ == '__main__':
                 logging.FileHandler(logfile),
                 logging.StreamHandler()])
 
+    subprocess.call(f'net use m: {config["download_folder"]} /user:{"network_user"} {"network_password"}', shell=True)
 
-    Crawler(urls=config["urls"],
+    c = Crawler(urls=config["urls"],
             accepted_domains=config["accepted_domains"],
             download_folder=config["download_folder"],
             verify=config["verify"],
@@ -206,5 +259,8 @@ if __name__ == '__main__':
             login=config["login"],
             login_url=config["login_url"],
             download_url_path=config["download_url"],
-            regex=config["regex"]).run()
+            regex=config["regex"])
+    c.run()
+    open(c.meta_path, "w").write(json.dumps(c.meta_data))
+
 
