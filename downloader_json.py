@@ -38,7 +38,7 @@ def get_domains(accepted_domains, urls):
 
 
 class Crawler:
-    def __init__(self, urls=[], accepted_domains=[], download_folder='download/', verify=True, username='',password='', login=True, login_url='', download_url_path='', regex=''):
+    def __init__(self, urls=None, accepted_domains=None, download_folder='download/', verify=True, username='', password='', login=True, login_url='', download_url_path='', regex=''):
         """Constructs all necessary atributes, and generates the environment for the crawler
 
         Parameters
@@ -54,6 +54,10 @@ class Crawler:
             login: bool
                 if login is true the crawler will try to authentificate with username and password at the login_url
         """
+        if accepted_domains is None:
+            accepted_domains = []
+        if urls is None:
+            urls = []
         self.flag = False
         self.visited_urls = []
         self.is_folder = dict()
