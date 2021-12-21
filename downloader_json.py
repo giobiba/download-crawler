@@ -11,19 +11,20 @@ import sys
 import subprocess
 
 
-def add_unique_postfix(fn):
-    if not os.path.exists(fn):
+def add_unique_postfix(loc, fn):
+    path = os.path.join(loc, fn)
+
+    if not os.path.exists(path):
         return fn
 
-    path, name = os.path.split(fn)
-    name, ext = os.path.splitext(name)
+    name, ext = os.path.splitext(fn)
 
-    make_fn = lambda i: os.path.join(path, '%s(%d)%s' % (name, i, ext))
+    make_fn = lambda i: os.path.join(loc, '%s(%d)%s' % (name, i, ext))
 
     for i in range(2, sys.maxsize):
         uni_fn = make_fn(i)
         if not os.path.exists(uni_fn):
-            return uni_fn
+            return os.path.split(uni_fn)[1]
 
 
 def get_domains(accepted_domains, urls):
@@ -97,7 +98,7 @@ class Crawler:
             self.body = ''
             self.headers = ''
 
-        self.meta_path = self.download_folder + "meta.json"
+        self.meta_path = os.path.join(self.download_folder, "meta.json")
         self.meta_data = json.loads("{}")
         self.temp_meta_data = json.loads("{}")
         # open the json metadata file, if it doesn't exist create it
@@ -172,7 +173,7 @@ class Crawler:
                         self.temp_meta_data[path] = dict()
 
                     if self.meta_data.get(path) is None:
-                        self.temp_meta_data[path]["name"] = add_unique_postfix(name)
+                        self.temp_meta_data[path]["name"] = add_unique_postfix(self.download_folder, name)
                     else:
                         self.temp_meta_data[path]["name"] = self.meta_data[path]["name"]
 
@@ -191,7 +192,7 @@ class Crawler:
             for chunk in res.iter_content(chunk_size=int(1e+7)):
                 if chunk:
                     f.write(chunk)
-        logging.info(f"Finished upload from: {url}")
+        logging.info(f"Finished upload to: {download_loc}")
 
     def run(self):
         """ Main function of the crawler that contains most of the logic necessary for the crawl"""
@@ -223,7 +224,7 @@ class Crawler:
 
                 # construct the download path and the download folder
                 durl = f'{self.download_url_path}?repoKey={json_text["repo"]}&path={json_text["path"].replace("/", "%252F")}'
-                download_loc = self.download_folder + self.temp_meta_data[path := json_text["path"]]["name"]
+                download_loc = os.path.join(self.download_folder, self.temp_meta_data[path := json_text["path"]]["name"])
 
                 self.download_and_save(durl, download_loc)
 
