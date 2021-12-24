@@ -237,7 +237,8 @@ class Crawler:
                                           child.get('name'), json_text["path"])
             else:
                 # skip if the url doesn't match the given regex pattern
-                if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(url)):
+
+                if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(urlparse(url).path.split('/')[-1])):
                     logging.info(f'Skipped url: {url} (incompatible with the regex)')
                     continue
 
