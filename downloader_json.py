@@ -177,19 +177,19 @@ class Crawler:
                     self.temp_meta_data[path]["size"] = size
                     self.temp_meta_data[path]["lastModified"] = last_modified
                 else:
-                    logging.info(f"File {path} already exists, with the same lastModified and size")
+                    logging.info(f"File {path} is identical.")
 
     def download_and_save(self, url, download_loc):
         logging.info(f"Downloading from: {url}")
         res = self.session.get(url, verify=self.verify, cookies=self.cookies)
         self.cookies = res.cookies
-        logging.info(f"Finished downloading from: {url}, starting upload")
+        logging.info(f"Finished downloading from: {url}")
 
         with open(download_loc, 'wb') as f:
             for chunk in res.iter_content(chunk_size=int(1e+7)):
                 if chunk:
                     f.write(chunk)
-        logging.info(f"Finished upload to: {download_loc}")
+        logging.info(f"Finished uploading to: {download_loc}")
 
     def run(self):
         """ Main function of the crawler that contains most of the logic necessary for the crawl"""
@@ -239,6 +239,13 @@ if __name__ == '__main__':
     config = json.load(open('config.json'))
 
     if config["logging"]:
+        lista = sorted([os.path.join('logs/', file) for file in os.listdir('logs/') if not os.path.isdir(os.path.join('logs/', file))],
+               key=lambda x: os.path.getmtime(x))
+
+        if type(config["keep-logs"]) == int and config["keep-logs"] < len(lista):
+            for file in lista[:-config["keep-logs"]]:
+                os.remove(file)
+
         logfile = f"logs/debug-{datetime.today().strftime('%Y-%m-%d-%H%M%S')}.log"
         file = Path(logfile)
         file.touch(exist_ok=True)
