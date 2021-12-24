@@ -238,7 +238,7 @@ class Crawler:
             else:
                 # skip if the url doesn't match the given regex pattern
                 if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(url)):
-                    logging.info(f'Skipped url: {url}')
+                    logging.info(f'Skipped url: {url} (incompatible with the regex)')
                     continue
 
                 # construct the download path and the download folder
