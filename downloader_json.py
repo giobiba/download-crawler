@@ -39,7 +39,8 @@ def get_domains(accepted_domains, urls):
 
 
 class Crawler:
-    def __init__(self, urls=None, accepted_domains=None, download_folder='download/', verify=True, username='', password='', login=True, login_url='', download_url_path='', regex=''):
+    def __init__(self, urls=None, accepted_domains=None, download_folder='download/', verify=True, username='',
+                 password='', login=True, login_url='', download_url_path='', regex='', webhook_url='', webhook_download_link=''):
         """Constructs all necessary atributes, and generates the environment for the crawler
 
         Parameters
@@ -59,6 +60,10 @@ class Crawler:
             accepted_domains = []
         if urls is None:
             urls = []
+
+        self.webhook_url = webhook_url
+        self.webhook_download_link = webhook_download_link
+
         self.flag = False
         self.visited_urls = []
         self.is_folder = dict()
@@ -70,8 +75,8 @@ class Crawler:
         self.re_prog = re.compile(regex)
         self.session = requests.session()
         self.head_headers = {
-                'X-Requested-With': 'XMLHttpRequest',
-                'Connection': 'close'
+            'X-Requested-With': 'XMLHttpRequest',
+            'Connection': 'close'
         }
 
         # header used for HEAD requests
@@ -113,6 +118,19 @@ class Crawler:
 
         signal.signal(signal.SIGINT, signal_handler)
 
+    def send_message_to_webhook(self, message):
+
+        headers = {
+            'Content-Type': 'application/json',
+        }
+        data = {"text": message}
+        res = requests.post(self.webhook_url, headers=headers, data=json.dumps(data))
+
+        if res.status_code == 200:
+            logging.info(f'Sent "{message}" to webhook')
+        else:
+            logging.info(f'Failed to send "{message}" to webhook, status code: {res.status_code}')
+
     def download_url(self, url):
         """Used to retrieve the html of the url param
 
@@ -149,7 +167,7 @@ class Crawler:
             last time the file was modified on the server
         """
         logging.info(f'Adding: {url}')
-        domain ='{uri.scheme}://{uri.netloc}/'.format(uri=urlparse(url))
+        domain = '{uri.scheme}://{uri.netloc}/'.format(uri=urlparse(url))
 
         if url not in self.visited_urls and url not in self.urls_to_visit and domain in self.accepted_domains:
             path = curr_path + "/" + name
@@ -161,9 +179,12 @@ class Crawler:
 
                 logging.info(f"Server Last Modified: {last_modified}, Server Size: {size}")
                 if self.meta_data.get(path) is not None:
-                    logging.info(f"Client Last Modified: {self.meta_data[path].get('lastModified')}, Client Size : {self.meta_data[path].get('size')}")
+                    logging.info(
+                        f"Client Last Modified: {self.meta_data[path].get('lastModified')}, Client Size : {self.meta_data[path].get('size')}")
 
-                if self.meta_data.get(path) is None or (last_modified != self.meta_data[path].get("lastModified") or size != self.meta_data[path].get("size")):
+                if self.meta_data.get(path) is None or (
+                        last_modified != self.meta_data[path].get("lastModified") or size != self.meta_data[path].get(
+                        "size")):
                     self.urls_to_visit.append(url)
 
                     if self.temp_meta_data.get(path) is None:
@@ -212,7 +233,8 @@ class Crawler:
                 # loop through all the children of the folder and add them to the url_to_visit list
                 for child in json_text.get("children"):
                     new_url = url + "/" + child.get("name")
-                    self.add_url_to_visit(new_url, child.get('size'), child.get('folder'), child.get('lastModified'), child.get('name'), json_text["path"])
+                    self.add_url_to_visit(new_url, child.get('size'), child.get('folder'), child.get('lastModified'),
+                                          child.get('name'), json_text["path"])
             else:
                 # skip if the url doesn't match the given regex pattern
                 if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(url)):
@@ -221,9 +243,12 @@ class Crawler:
 
                 # construct the download path and the download folder
                 durl = f'{self.download_url_path}?repoKey={json_text["repo"]}&path={json_text["path"].replace("/", "%252F")}'
-                download_loc = os.path.join(self.download_folder, self.temp_meta_data[path := json_text["path"]]["name"])
+                download_loc = os.path.join(self.download_folder,
+                                            (name := self.temp_meta_data[path := json_text["path"]]["name"]))
 
                 self.download_and_save(durl, download_loc)
+
+                self.send_message_to_webhook(f'File downloaded at: {self.webhook_download_link + name}')
 
                 self.meta_data[path] = self.temp_meta_data[path].copy()
                 del self.temp_meta_data[path]
@@ -238,8 +263,14 @@ class Crawler:
 if __name__ == '__main__':
     config = json.load(open('config.json'))
 
-    if config["logging"]:
-        lista = sorted([os.path.join('logs/', file) for file in os.listdir('logs/') if not os.path.isdir(os.path.join('logs/', file))],
+
+    if config.get("logging"):
+        try:
+            os.mkdir('logs')
+        except:
+            pass
+
+        lista = sorted([os.path.join('logs', file) for file in os.listdir('logs') if not os.path.isdir(os.path.join('logs', file))],
                key=lambda x: os.path.getmtime(x))
 
         if type(config["keep-logs"]) == int and config["keep-logs"] < len(lista):
@@ -257,7 +288,8 @@ if __name__ == '__main__':
                 logging.FileHandler(logfile),
                 logging.StreamHandler()])
 
-    subprocess.call(f'net use m: {config["download_folder"]} /user:{"network_user"} {"network_password"}', shell=True)
+    if config.get("download_folder") and config.get("network_user") and config.get("network_password"):
+        subprocess.call(f'net use m: {config["download_folder"]} /user:{config["network_user"]} {config["network_password"]}', shell=True)
 
     c = Crawler(urls=config["urls"],
             accepted_domains=config["accepted_domains"],
@@ -268,8 +300,8 @@ if __name__ == '__main__':
             login=config["login"],
             login_url=config["login_url"],
             download_url_path=config["download_url"],
-            regex=config["regex"])
+            regex=config["regex"],
+            webhook_url=config["webhook-url"],
+            webhook_download_link=config["webhook-download-link"])
     c.run()
     open(c.meta_path, "w").write(json.dumps(c.meta_data))
-
-
