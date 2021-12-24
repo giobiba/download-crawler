@@ -159,12 +159,9 @@ class Crawler:
                 self.urls_to_visit.append(url)
             else:
 
-                logging.info(f"Comparing server and local file {path}")
-                logging.info(f"Server Last Modified: {last_modified}")
-                logging.info(f"Server Size: {size}")
+                logging.info(f"Server Last Modified: {last_modified}, Server Size: {size}")
                 if self.meta_data.get(path) is not None:
-                    logging.info(f"Client Last Modified: {self.meta_data[path].get('lastModified')}")
-                    logging.info(f"Client Size : {self.meta_data[path].get('size')}")
+                    logging.info(f"Client Last Modified: {self.meta_data[path].get('lastModified')}, Client Size : {self.meta_data[path].get('size')}")
 
                 if self.meta_data.get(path) is None or (last_modified != self.meta_data[path].get("lastModified") or size != self.meta_data[path].get("size")):
                     self.urls_to_visit.append(url)
@@ -242,7 +239,7 @@ if __name__ == '__main__':
     config = json.load(open('config.json'))
 
     if config["logging"]:
-        logfile = f"debug-{datetime.today().strftime('%Y-%m-%d-%H%M%S')}.log"
+        logfile = f"logs/debug-{datetime.today().strftime('%Y-%m-%d-%H%M%S')}.log"
         file = Path(logfile)
         file.touch(exist_ok=True)
 
