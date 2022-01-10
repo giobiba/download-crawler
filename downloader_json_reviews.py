@@ -348,7 +348,7 @@ if __name__ == '__main__':
                 logging.StreamHandler()])
 
     if config.get("download_folder") and config.get("network_user") and config.get("network_password"):
-        subprocess.call(f'net use m: {config["download_folder"]} /user:{config["network_user"]} {config["network_password"]}', shell=True)
+        subprocess.call(f'net use m: {config["download_folder"]} /user:{config["network_user"]} {config["network_password"]} /Y', shell=True)
 
     c = Crawler(urls=config["urls"],
             accepted_domains=config["accepted_domains"],
