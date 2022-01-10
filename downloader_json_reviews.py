@@ -64,6 +64,7 @@ class Crawler:
         self.webhook_url = webhook_url
         self.webhook_download_link = webhook_download_link
 
+        self.path_prefix = None
         self.flag = False
         self.visited_urls = []
         self.is_folder = dict()
@@ -151,6 +152,14 @@ class Crawler:
 
         return res.text, res.status_code
 
+    def remove_patch_id(self, path):
+        dirpath, file = os.path.split(path)
+        dirpath = dirpath.rsplit('-', 1)[0]
+        return os.path.join(dirpath, file).replace("\\", "/")
+
+    def remove_prefix(self, path):
+        return path.removeprefix(self.path_prefix).split('/', 1)[1]
+
     def add_url_to_visit(self, url, size, is_folder, last_modified, name, curr_path):
         """When a url is to be added it verifies if it's domain is in the list of acceptable domains
         and if it hasn't been visited, or hasn't been added to the urls_to_visit list
@@ -168,41 +177,79 @@ class Crawler:
         name: str
             name of the folder/ file we want to visit
         curr_path: str
-            parent url
+            parent path
         """
         logging.info(f'Adding: {url}')
         domain = '{uri.scheme}://{uri.netloc}/'.format(uri=urlparse(url))
 
         if url not in self.visited_urls and url not in self.urls_to_visit and domain in self.accepted_domains:
             path = curr_path + "/" + name
+            path = self.remove_prefix(path)
             self.is_folder[path] = is_folder
 
             if is_folder:
-                self.urls_to_visit.append(url)
-            else:
-
-                logging.info(f"Server Last Modified: {last_modified}, Server Size: {size}")
-                if self.meta_data.get(path) is not None:
-                    logging.info(
-                        f"Client Last Modified: {self.meta_data[path].get('lastModified')}, Client Size : {self.meta_data[path].get('size')}")
-
-                if self.meta_data.get(path) is None or (
-                        last_modified != self.meta_data[path].get("lastModified") or size != self.meta_data[path].get(
-                        "size")):
+                # identiy the patch_id of the folder
+                temp = path.rsplit('-', 1)
+                # means that it doesn't have a patch id so we dont need to do the extra steps
+                if len(temp) == 1:
                     self.urls_to_visit.append(url)
 
-                    if self.temp_meta_data.get(path) is None:
-                        self.temp_meta_data[path] = dict()
+                path, patch_id = temp[0], int(temp[1])
+                # verify if the folder name (wo patch_id) exists
+                download_loc = os.path.join(self.download_folder, path)
 
-                    if self.meta_data.get(path) is None:
-                        self.temp_meta_data[path]["name"] = add_unique_postfix(self.download_folder, name)
-                    else:
-                        self.temp_meta_data[path]["name"] = self.meta_data[path]["name"]
+                # if it doesnt create a new one, and add the meta data
+                if not os.path.exists(download_loc):
+                    os.makedirs(download_loc)
+                    os.chmod(download_loc, 666)
 
-                    self.temp_meta_data[path]["size"] = size
-                    self.temp_meta_data[path]["lastModified"] = last_modified
+                    self.meta_data[path] = {
+                        "patch_id": patch_id,
+                        "url": url
+                    }
+                    self.urls_to_visit.append(url)
+                # case in which the folder was created outside of this program, thus having no metadata
+                elif self.meta_data.get(path) is None:
+                    self.meta_data[path] = {
+                        "patch_id": patch_id,
+                        "url": url
+                    }
+                    self.urls_to_visit.append(url)
                 else:
-                    logging.info(f"File {path} is identical.")
+                    if self.meta_data[path]["patch_id"] < patch_id:
+                        logging.info(f"Found new patch {patch_id} for {path}")
+                        # update the patch_id
+                        self.meta_data[path]["patch_id"] = patch_id
+                        # remove prev url
+                        self.urls_to_visit.remove(self.meta_data[path]["url"])
+                        # change to the new url
+                        self.meta_data[path]["url"] = url
+                        self.urls_to_visit.append(url)
+                    if self.meta_data[path]["patch_id"] == patch_id:
+                        self.urls_to_visit.append(url)
+            else:
+                if self.meta_data.get(path) is None or (last_modified != self.meta_data[path].get("lastModified") or size != self.meta_data[path].get("size")):
+                    if self.meta_data.get(path) is not None:
+                        logging.info(
+                            f"Client Last Modified: {self.meta_data[path].get('lastModified')}, Client Size : {self.meta_data[path].get('size')}")
+
+                    if self.meta_data.get(path) is None or \
+                            (last_modified != self.meta_data[path].get("lastModified") or
+                             size != self.meta_data[path].get("size")):
+                        self.urls_to_visit.append(url)
+
+                        if self.temp_meta_data.get(path) is None:
+                            self.temp_meta_data[path] = dict()
+
+                        if self.meta_data.get(path) is None:
+                            self.temp_meta_data[path]["name"] = add_unique_postfix(self.download_folder, name)
+                        else:
+                            self.temp_meta_data[path]["name"] = self.meta_data[path]["name"]
+
+                        self.temp_meta_data[path]["size"] = size
+                        self.temp_meta_data[path]["lastModified"] = last_modified
+                    else:
+                        logging.info(f"File {path} is identical.")
 
     def download_and_save(self, url, download_loc):
         logging.info(f"Downloading from: {url}")
@@ -219,6 +266,7 @@ class Crawler:
     def run(self):
         """ Main function of the crawler that contains most of the logic necessary for the crawl"""
         # a breadth first search in the queue of urls, starting with the urls given in the constructor of the class.
+
         while self.urls_to_visit and not self.flag:
             # get the next url to explore
             url = self.urls_to_visit.pop(0)
@@ -231,6 +279,10 @@ class Crawler:
 
             # load json
             json_text = json.loads(text)
+
+            if self.path_prefix is None:
+                self.path_prefix = json_text["path"]
+
             if json_text.get("folder"):
                 logging.info(f'Crawling: {url}')
 
@@ -241,19 +293,21 @@ class Crawler:
                                           child.get('name'), json_text["path"])
             else:
                 # skip if the url doesn't match the given regex pattern
-
                 if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(urlparse(url).path.split('/')[-1])):
                     logging.info(f'Skipped url: {url} (incompatible with the regex)')
                     continue
 
                 # construct the download path and the download folder
+
                 durl = f'{self.download_url_path}?repoKey={json_text["repo"]}&path={json_text["path"].replace("/", "%252F")}'
-                download_loc = os.path.join(self.download_folder,
-                                            (name := self.temp_meta_data[path := json_text["path"]]["name"]))
+
+                path = self.remove_prefix(json_text["path"])
+                name = self.temp_meta_data[path]["name"]
+                download_loc = os.path.join(self.download_folder, self.remove_patch_id(path))
 
                 self.download_and_save(durl, download_loc)
 
-                self.send_message_to_webhook(f'File downloaded at: {self.webhook_download_link + name}')
+                self.send_message_to_webhook(f'File downloaded at: {self.webhook_download_link + self.remove_patch_id(path)}')
 
                 self.meta_data[path] = self.temp_meta_data[path].copy()
                 del self.temp_meta_data[path]
@@ -266,7 +320,7 @@ class Crawler:
 
 
 if __name__ == '__main__':
-    config = json.load(open('config.json'))
+    config = json.load(open('config_reviews.json'))
 
 
     if config.get("logging"):
