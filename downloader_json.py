@@ -1,6 +1,6 @@
 import logging
 from urllib.parse import urlparse
-import os
+import os, shutil
 import json
 from datetime import datetime
 from pathlib import Path
@@ -40,7 +40,8 @@ def get_domains(accepted_domains, urls):
 
 class Crawler:
     def __init__(self, urls=None, accepted_domains=None, download_folder='download/', verify=True, username='',
-                 password='', login=True, login_url='', download_url_path='', regex='', webhook_url='', webhook_download_link=''):
+                 password='', login=True, login_url='', download_url_path='', regex='', webhook_url='',
+                 webhook_download_link='', files_remaining=-1):
         """Constructs all necessary atributes, and generates the environment for the crawler
 
         Parameters
@@ -64,6 +65,7 @@ class Crawler:
         self.webhook_url = webhook_url
         self.webhook_download_link = webhook_download_link
 
+        self.files_remaining = files_remaining or -1
         self.flag = False
         self.visited_urls = []
         self.is_folder = dict()
@@ -78,6 +80,9 @@ class Crawler:
             'X-Requested-With': 'XMLHttpRequest',
             'Connection': 'close'
         }
+
+        if self.files_remaining > 0:
+            self.clear_download_folder()
 
         # header used for HEAD requests
         self.head_headers = {
@@ -98,7 +103,6 @@ class Crawler:
             }
             res = self.session.post(login_url, headers=headers, data=login)
             self.cookies = res.cookies
-
         else:
             self.body = ''
             self.headers = ''
@@ -106,6 +110,7 @@ class Crawler:
         self.meta_path = os.path.join(self.download_folder, "meta.json")
         self.meta_data = json.loads("{}")
         self.temp_meta_data = json.loads("{}")
+
         # open the json metadata file, if it doesn't exist create it
         if not os.path.exists(self.meta_path):
             Path(self.meta_path).touch(666, exist_ok=True)
@@ -180,6 +185,10 @@ class Crawler:
             if is_folder:
                 self.urls_to_visit.append(url)
             else:
+                # skip if the url doesn't match the given regex pattern
+                if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(name)):
+                    logging.info(f'Skipped url: {url} (incompatible with the regex)')
+                    return
 
                 logging.info(f"Server Last Modified: {last_modified}, Server Size: {size}")
                 if self.meta_data.get(path) is not None:
@@ -235,16 +244,17 @@ class Crawler:
                 logging.info(f'Crawling: {url}')
 
                 # loop through all the children of the folder and add them to the url_to_visit list
-                for child in json_text.get("children"):
+                for child in sorted(json_text.get("children"), key=lambda x: x.get('lastModified'), reverse=True):
                     new_url = url + "/" + child.get("name")
                     self.add_url_to_visit(new_url, child.get('size'), child.get('folder'), child.get('lastModified'),
                                           child.get('name'), json_text["path"])
             else:
-                # skip if the url doesn't match the given regex pattern
-
-                if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(urlparse(url).path.split('/')[-1])):
-                    logging.info(f'Skipped url: {url} (incompatible with the regex)')
+                if self.files_remaining == 0:
+                    self.flag = True
                     continue
+
+                if self.files_remaining > 0:
+                    self.files_remaining -= 1
 
                 # construct the download path and the download folder
                 durl = f'{self.download_url_path}?repoKey={json_text["repo"]}&path={json_text["path"].replace("/", "%252F")}'
@@ -264,6 +274,18 @@ class Crawler:
             open(self.meta_path, "w").write(json.dumps(self.meta_data))
             sys.exit(0)
 
+    def clear_download_folder(self):
+        for filename in os.listdir(self.download_folder):
+            file_path = os.path.join(self.download_folder, filename)
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+                logging.info('Deleted %s' % (file_path,))
+            except Exception as e:
+                logging.error('Failed to delete %s. Reason: %s' % (file_path, e))
+
 
 if __name__ == '__main__':
     config = json.load(open('config.json'))
@@ -278,8 +300,8 @@ if __name__ == '__main__':
         lista = sorted([os.path.join('logs', file) for file in os.listdir('logs') if not os.path.isdir(os.path.join('logs', file))],
                key=lambda x: os.path.getmtime(x))
 
-        if type(config["keep-logs"]) == int and config["keep-logs"] < len(lista):
-            for file in lista[:-config["keep-logs"]]:
+        if type(config["logs-kept"]) == int and config["logs-kept"] < len(lista):
+            for file in lista[:-config["logs-kept"]]:
                 os.remove(file)
 
         logfile = f"logs/debug-{datetime.today().strftime('%Y-%m-%d-%H%M%S')}.log"
@@ -297,16 +319,17 @@ if __name__ == '__main__':
         subprocess.call(f'net use m: {config["download_folder"]} /user:{config["network_user"]} {config["network_password"]} /Y', shell=True)
 
     c = Crawler(urls=config["urls"],
-            accepted_domains=config["accepted_domains"],
-            download_folder=config["download_folder"],
-            verify=config["verify"],
-            username=config["username"],
-            password=config["password"],
-            login=config["login"],
-            login_url=config["login_url"],
-            download_url_path=config["download_url"],
-            regex=config["regex"],
-            webhook_url=config["webhook-url"],
-            webhook_download_link=config["webhook-download-link"])
+                accepted_domains=config["accepted_domains"],
+                download_folder=config["download_folder"],
+                verify=config["verify"],
+                username=config["username"],
+                password=config["password"],
+                login=config["login"],
+                login_url=config["login_url"],
+                download_url_path=config["download_url"],
+                regex=config["regex"],
+                webhook_url=config["webhook-url"],
+                webhook_download_link=config["webhook-download-link"],
+                files_remaining=config["files-count"])
     c.run()
     open(c.meta_path, "w").write(json.dumps(c.meta_data))
