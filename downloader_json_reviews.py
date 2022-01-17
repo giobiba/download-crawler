@@ -9,6 +9,20 @@ import re
 import signal
 import sys
 import subprocess
+import shutil
+
+
+def remove_patch_id(path):
+    dir_path, file = os.path.split(path)
+    dir_path = dir_path.rsplit('-', 1)[0]
+    return os.path.join(dir_path, file).replace("\\", "/")
+
+
+def remove_empty_folders(path_abs):
+    walk = list(os.walk(path_abs))
+    for path, _, _ in walk[::-1]:
+        if len(os.listdir(path)) == 0:
+            os.rmdir(path)
 
 
 def add_unique_postfix(loc, fn):
@@ -40,7 +54,8 @@ def get_domains(accepted_domains, urls):
 
 class Crawler:
     def __init__(self, urls=None, accepted_domains=None, download_folder='download/', verify=True, username='',
-                 password='', login=True, login_url='', download_url_path='', regex='', webhook_url='', webhook_download_link=''):
+                 password='', login=True, login_url='', download_url_path='', regex='',
+                 webhook_url='', webhook_download_link='', files_remaining=-1):
         """Constructs all necessary atributes, and generates the environment for the crawler
 
         Parameters
@@ -64,6 +79,7 @@ class Crawler:
         self.webhook_url = webhook_url
         self.webhook_download_link = webhook_download_link
 
+        self.files_remaining = files_remaining or -1
         self.path_prefix = None
         self.flag = False
         self.visited_urls = []
@@ -75,6 +91,10 @@ class Crawler:
         self.verify = verify
         self.re_prog = re.compile(regex)
         self.session = requests.session()
+
+        if self.files_remaining > 0:
+            self.clear_download_folder()
+
         self.head_headers = {
             'X-Requested-With': 'XMLHttpRequest',
             'Connection': 'close'
@@ -152,11 +172,6 @@ class Crawler:
 
         return res.text, res.status_code
 
-    def remove_patch_id(self, path):
-        dirpath, file = os.path.split(path)
-        dirpath = dirpath.rsplit('-', 1)[0]
-        return os.path.join(dirpath, file).replace("\\", "/")
-
     def remove_prefix(self, path):
         return path.removeprefix(self.path_prefix).split('/', 1)[1]
 
@@ -229,6 +244,11 @@ class Crawler:
                         self.urls_to_visit.append(url)
             else:
                 if self.meta_data.get(path) is None or (last_modified != self.meta_data[path].get("lastModified") or size != self.meta_data[path].get("size")):
+                    # skip if the url doesn't match the given regex pattern
+                    if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(name)):
+                        logging.info(f'Skipped url: {url} (incompatible with the regex)')
+                        return
+
                     if self.meta_data.get(path) is not None:
                         logging.info(
                             f"Client Last Modified: {self.meta_data[path].get('lastModified')}, Client Size : {self.meta_data[path].get('size')}")
@@ -293,21 +313,23 @@ class Crawler:
                                           child.get('name'), json_text["path"])
             else:
                 # skip if the url doesn't match the given regex pattern
-                if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(urlparse(url).path.split('/')[-1])):
-                    logging.info(f'Skipped url: {url} (incompatible with the regex)')
+                if self.files_remaining == 0:
+                    self.flag = True
                     continue
 
-                # construct the download path and the download folder
+                if self.files_remaining > 0:
+                    self.files_remaining -= 1
 
+                # construct the download path and the download folder
                 durl = f'{self.download_url_path}?repoKey={json_text["repo"]}&path={json_text["path"].replace("/", "%252F")}'
 
                 path = self.remove_prefix(json_text["path"])
                 name = self.temp_meta_data[path]["name"]
-                download_loc = os.path.join(self.download_folder, self.remove_patch_id(path))
+                download_loc = os.path.join(self.download_folder, remove_patch_id(path))
 
                 self.download_and_save(durl, download_loc)
 
-                self.send_message_to_webhook(f'File downloaded at: {self.webhook_download_link + self.remove_patch_id(path)}')
+                self.send_message_to_webhook(f'File downloaded at: {self.webhook_download_link + remove_patch_id(path)}')
 
                 self.meta_data[path] = self.temp_meta_data[path].copy()
                 del self.temp_meta_data[path]
@@ -316,7 +338,20 @@ class Crawler:
 
         if self.flag:
             open(self.meta_path, "w").write(json.dumps(self.meta_data))
+            remove_empty_folders(self.download_folder)
             sys.exit(0)
+
+    def clear_download_folder(self):
+        for filename in os.listdir(self.download_folder):
+            file_path = os.path.join(self.download_folder, filename)
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+                logging.info('Deleted %s' % (file_path,))
+            except Exception as e:
+                logging.error('Failed to delete %s. Reason: %s' % (file_path, e))
 
 
 if __name__ == '__main__':
@@ -361,6 +396,7 @@ if __name__ == '__main__':
             download_url_path=config["download_url"],
             regex=config["regex"],
             webhook_url=config["webhook-url"],
-            webhook_download_link=config["webhook-download-link"])
+            webhook_download_link=config["webhook-download-link"],
+            files_remaining=config["files-count"])
     c.run()
     open(c.meta_path, "w").write(json.dumps(c.meta_data))

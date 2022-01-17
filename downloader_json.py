@@ -290,7 +290,6 @@ class Crawler:
 if __name__ == '__main__':
     config = json.load(open('config.json'))
 
-
     if config.get("logging"):
         try:
             os.mkdir('logs')
@@ -306,7 +305,7 @@ if __name__ == '__main__':
 
         logfile = f"logs/debug-{datetime.today().strftime('%Y-%m-%d-%H%M%S')}.log"
         file = Path(logfile)
-        file.touch(exist_ok=True)
+        file.touch(exist_ok=True, mode=666)
 
         logging.basicConfig(
             format='%(asctime)s %(levelname)s:%(message)s',
@@ -330,6 +329,6 @@ if __name__ == '__main__':
                 regex=config["regex"],
                 webhook_url=config["webhook-url"],
                 webhook_download_link=config["webhook-download-link"],
-                files_remaining=config["files-count"])
+                files_remaining=config.get("files-count"))
     c.run()
     open(c.meta_path, "w").write(json.dumps(c.meta_data))
