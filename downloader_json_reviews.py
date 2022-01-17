@@ -9,13 +9,6 @@ import re
 import signal
 import sys
 import subprocess
-import shutil
-
-
-def remove_patch_id(path):
-    dir_path, file = os.path.split(path)
-    dir_path = dir_path.rsplit('-', 1)[0]
-    return os.path.join(dir_path, file).replace("\\", "/")
 
 
 def remove_empty_folders(path_abs):
@@ -23,6 +16,12 @@ def remove_empty_folders(path_abs):
     for path, _, _ in walk[::-1]:
         if len(os.listdir(path)) == 0:
             os.rmdir(path)
+
+
+def remove_patch_id(path):
+    dir_path, file = os.path.split(path)
+    dir_path = dir_path.rsplit('-', 1)[0]
+    return os.path.join(dir_path, file).replace("\\", "/")
 
 
 def add_unique_postfix(loc, fn):
@@ -52,7 +51,7 @@ def get_domains(accepted_domains, urls):
     return accepted_domains
 
 
-class Crawler:
+class ReviewCrawler:
     def __init__(self, urls=None, accepted_domains=None, download_folder='download/', verify=True, username='',
                  password='', login=True, login_url='', download_url_path='', regex='',
                  webhook_url='', webhook_download_link='', files_remaining=-1):
@@ -79,7 +78,8 @@ class Crawler:
         self.webhook_url = webhook_url
         self.webhook_download_link = webhook_download_link
 
-        self.files_remaining = files_remaining or -1
+        self.files_remaining = self.files_remaining_to_download = self.files_kept = files_remaining or -1
+
         self.path_prefix = None
         self.flag = False
         self.visited_urls = []
@@ -91,9 +91,6 @@ class Crawler:
         self.verify = verify
         self.re_prog = re.compile(regex)
         self.session = requests.session()
-
-        if self.files_remaining > 0:
-            self.clear_download_folder()
 
         self.head_headers = {
             'X-Requested-With': 'XMLHttpRequest',
@@ -194,7 +191,6 @@ class Crawler:
         curr_path: str
             parent path
         """
-        logging.info(f'Adding: {url}')
         domain = '{uri.scheme}://{uri.netloc}/'.format(uri=urlparse(url))
 
         if url not in self.visited_urls and url not in self.urls_to_visit and domain in self.accepted_domains:
@@ -243,12 +239,18 @@ class Crawler:
                     if self.meta_data[path]["patch_id"] == patch_id:
                         self.urls_to_visit.append(url)
             else:
-                if self.meta_data.get(path) is None or (last_modified != self.meta_data[path].get("lastModified") or size != self.meta_data[path].get("size")):
-                    # skip if the url doesn't match the given regex pattern
-                    if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(name)):
-                        logging.info(f'Skipped url: {url} (incompatible with the regex)')
-                        return
+                # skip if the url doesn't match the given regex patter
+                if self.re_prog.pattern != "" and not bool(self.re_prog.fullmatch(name)):
+                    logging.info(f'Skipped url: {url} (incompatible with the regex)')
+                    return
 
+                if self.files_remaining_to_download == 0:
+                    return
+
+                if self.files_remaining_to_download > 0:
+                    self.files_remaining_to_download -= 1
+
+                if self.meta_data.get(path) is None or (last_modified != self.meta_data[path].get("lastModified") or size != self.meta_data[path].get("size")):
                     if self.meta_data.get(path) is not None:
                         logging.info(
                             f"Client Last Modified: {self.meta_data[path].get('lastModified')}, Client Size : {self.meta_data[path].get('size')}")
@@ -257,6 +259,7 @@ class Crawler:
                             (last_modified != self.meta_data[path].get("lastModified") or
                              size != self.meta_data[path].get("size")):
                         self.urls_to_visit.append(url)
+                        logging.info(f'Adding: {url}')
 
                         if self.temp_meta_data.get(path) is None:
                             self.temp_meta_data[path] = dict()
@@ -290,6 +293,7 @@ class Crawler:
         while self.urls_to_visit and not self.flag:
             # get the next url to explore
             url = self.urls_to_visit.pop(0)
+            self.visited_urls.append(url)
             # retrieve the body and the status code of the url
             text, status_code = self.download_url(url)
 
@@ -304,6 +308,8 @@ class Crawler:
                 self.path_prefix = json_text["path"]
 
             if json_text.get("folder"):
+                if self.files_remaining_to_download == 0:
+                    continue
                 logging.info(f'Crawling: {url}')
 
                 # loop through all the children of the folder and add them to the url_to_visit list
@@ -312,7 +318,6 @@ class Crawler:
                     self.add_url_to_visit(new_url, child.get('size'), child.get('folder'), child.get('lastModified'),
                                           child.get('name'), json_text["path"])
             else:
-                # skip if the url doesn't match the given regex pattern
                 if self.files_remaining == 0:
                     self.flag = True
                     continue
@@ -329,29 +334,43 @@ class Crawler:
 
                 self.download_and_save(durl, download_loc)
 
-                self.send_message_to_webhook(f'File downloaded at: {self.webhook_download_link + remove_patch_id(path)}')
+                if self.webhook_url is not None and self.webhook_url != '':
+                    self.send_message_to_webhook(f'File downloaded at: {self.webhook_download_link + remove_patch_id(path)}')
 
                 self.meta_data[path] = self.temp_meta_data[path].copy()
                 del self.temp_meta_data[path]
 
-            self.visited_urls.append(url)
+        if type(self.files_kept) == int and self.files_kept > 0:
+            self.clear_download_folder()
+        self.remove_empty_folders(self.download_folder)
 
         if self.flag:
             open(self.meta_path, "w").write(json.dumps(self.meta_data))
-            remove_empty_folders(self.download_folder)
             sys.exit(0)
 
+    def remove_empty_folders(self, path_abs):
+        walk = list(os.walk(path_abs))
+        for path, _, _ in walk[::-1]:
+            if len(os.listdir(path)) == 0:
+                os.rmdir(path)
+                try:
+                    del self.meta_data[os.path.relpath(path, path_abs)]
+                except:
+                    pass
+
     def clear_download_folder(self):
-        for filename in os.listdir(self.download_folder):
-            file_path = os.path.join(self.download_folder, filename)
+        files = ((key2, value) for key, value in self.meta_data.items() if os.path.isfile(os.path.join(
+            self.download_folder, key2 := remove_patch_id(key))))
+        files = sorted(files, key=lambda x: x[1]['lastModified'])
+
+        for key, _ in files[:-min(self.files_kept, len(files))]:
             try:
-                if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path)
-                elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path)
-                logging.info('Deleted %s' % (file_path,))
+                os.remove(path := os.path.join(self.download_folder, key))
+                del self.meta_data[key]
+                logging.info(f'Removed {path}')
             except Exception as e:
-                logging.error('Failed to delete %s. Reason: %s' % (file_path, e))
+                logging.error(e)
+
 
 
 if __name__ == '__main__':
@@ -385,7 +404,7 @@ if __name__ == '__main__':
     if config.get("download_folder") and config.get("network_user") and config.get("network_password"):
         subprocess.call(f'net use m: {config["download_folder"]} /user:{config["network_user"]} {config["network_password"]} /Y', shell=True)
 
-    c = Crawler(urls=config["urls"],
+    c = ReviewCrawler(urls=config["urls"],
             accepted_domains=config["accepted_domains"],
             download_folder=config["download_folder"],
             verify=config["verify"],
@@ -395,8 +414,8 @@ if __name__ == '__main__':
             login_url=config["login_url"],
             download_url_path=config["download_url"],
             regex=config["regex"],
-            webhook_url=config["webhook-url"],
-            webhook_download_link=config["webhook-download-link"],
+            webhook_url=config.get("webhook-url"),
+            webhook_download_link=config.get("webhook-download-link"),
             files_remaining=config.get("files-count"))
     c.run()
     open(c.meta_path, "w").write(json.dumps(c.meta_data))

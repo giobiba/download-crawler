@@ -65,7 +65,7 @@ class Crawler:
         self.webhook_url = webhook_url
         self.webhook_download_link = webhook_download_link
 
-        self.files_remaining = files_remaining or -1
+        self.files_remaining = self.files_remaining_to_download = self.files_kept = files_remaining or -1
         self.flag = False
         self.visited_urls = []
         self.is_folder = dict()
@@ -80,9 +80,6 @@ class Crawler:
             'X-Requested-With': 'XMLHttpRequest',
             'Connection': 'close'
         }
-
-        if self.files_remaining > 0:
-            self.clear_download_folder()
 
         # header used for HEAD requests
         self.head_headers = {
@@ -175,7 +172,6 @@ class Crawler:
         curr_path: str
             parent url
         """
-        logging.info(f'Adding: {url}')
         domain = '{uri.scheme}://{uri.netloc}/'.format(uri=urlparse(url))
 
         if url not in self.visited_urls and url not in self.urls_to_visit and domain in self.accepted_domains:
@@ -190,6 +186,12 @@ class Crawler:
                     logging.info(f'Skipped url: {url} (incompatible with the regex)')
                     return
 
+                if self.files_remaining_to_download == 0:
+                    return
+
+                if self.files_remaining_to_download > 0:
+                    self.files_remaining_to_download -= 1
+
                 logging.info(f"Server Last Modified: {last_modified}, Server Size: {size}")
                 if self.meta_data.get(path) is not None:
                     logging.info(
@@ -197,7 +199,8 @@ class Crawler:
 
                 if self.meta_data.get(path) is None or (
                         last_modified != self.meta_data[path].get("lastModified") or size != self.meta_data[path].get(
-                        "size")):
+                    "size")):
+                    logging.info(f'Adding: {url}')
                     self.urls_to_visit.append(url)
 
                     if self.temp_meta_data.get(path) is None:
@@ -231,6 +234,7 @@ class Crawler:
         while self.urls_to_visit and not self.flag:
             # get the next url to explore
             url = self.urls_to_visit.pop(0)
+            self.visited_urls.append(url)
             # retrieve the body and the status code of the url
             text, status_code = self.download_url(url)
 
@@ -241,6 +245,8 @@ class Crawler:
             # load json
             json_text = json.loads(text)
             if json_text.get("folder"):
+                if self.files_remaining_to_download == 0:
+                    continue
                 logging.info(f'Crawling: {url}')
 
                 # loop through all the children of the folder and add them to the url_to_visit list
@@ -263,28 +269,31 @@ class Crawler:
 
                 self.download_and_save(durl, download_loc)
 
-                self.send_message_to_webhook(f'File downloaded at: {self.webhook_download_link + name}')
+                if self.webhook_url is not None and self.webhook_url != '':
+                    self.send_message_to_webhook(f'File downloaded at: {self.webhook_download_link + name}')
 
                 self.meta_data[path] = self.temp_meta_data[path].copy()
                 del self.temp_meta_data[path]
 
-            self.visited_urls.append(url)
+        if self.files_kept is not None:
+            self.clear_download_folder()
 
         if self.flag:
             open(self.meta_path, "w").write(json.dumps(self.meta_data))
             sys.exit(0)
 
     def clear_download_folder(self):
-        for filename in os.listdir(self.download_folder):
-            file_path = os.path.join(self.download_folder, filename)
+        files = ((key, value) for key, value in self.meta_data.items() if os.path.isfile(os.path.join(
+            self.download_folder, value['name'])))
+        files = sorted(files, key=lambda x: x[1]['lastModified'])
+
+        for key, file_name in files[:-min(self.files_kept, len(files))]:
             try:
-                if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path)
-                elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path)
-                logging.info('Deleted %s' % (file_path,))
+                os.remove(path := os.path.join(self.download_folder, file_name['name']))
+                del self.meta_data[key]
+                logging.info(f'Removed {path}')
             except Exception as e:
-                logging.error('Failed to delete %s. Reason: %s' % (file_path, e))
+                logging.error(e)
 
 
 if __name__ == '__main__':
@@ -296,11 +305,12 @@ if __name__ == '__main__':
         except:
             pass
 
-        lista = sorted([os.path.join('logs', file) for file in os.listdir('logs') if not os.path.isdir(os.path.join('logs', file))],
-               key=lambda x: os.path.getmtime(x))
+        lista = sorted([os.path.join('logs', file) for file in os.listdir('logs') if
+                        not os.path.isdir(os.path.join('logs', file))],
+                       key=lambda x: os.path.getmtime(x))
 
-        if type(config["logs-kept"]) == int and config["logs-kept"] < len(lista):
-            for file in lista[:-config["logs-kept"]]:
+        if type(config["keep-logs"]) == int and config["keep-logs"] < len(lista):
+            for file in lista[:-config["keep-logs"]]:
                 os.remove(file)
 
         logfile = f"logs/debug-{datetime.today().strftime('%Y-%m-%d-%H%M%S')}.log"
@@ -315,7 +325,9 @@ if __name__ == '__main__':
                 logging.StreamHandler()])
 
     if config.get("download_folder") and config.get("network_user") and config.get("network_password"):
-        subprocess.call(f'net use m: {config["download_folder"]} /user:{config["network_user"]} {config["network_password"]} /Y', shell=True)
+        subprocess.call(
+            f'net use m: {config["download_folder"]} /user:{config["network_user"]} {config["network_password"]} /Y',
+            shell=True)
 
     c = Crawler(urls=config["urls"],
                 accepted_domains=config["accepted_domains"],
