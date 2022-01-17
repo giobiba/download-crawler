@@ -397,6 +397,6 @@ if __name__ == '__main__':
             regex=config["regex"],
             webhook_url=config["webhook-url"],
             webhook_download_link=config["webhook-download-link"],
-            files_remaining=config["files-count"])
+            files_remaining=config.get("files-count"))
     c.run()
     open(c.meta_path, "w").write(json.dumps(c.meta_data))
