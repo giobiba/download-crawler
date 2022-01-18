@@ -359,13 +359,13 @@ class ReviewCrawler:
                     pass
 
     def clear_download_folder(self):
-        files = ((key2, value) for key, value in self.meta_data.items() if os.path.isfile(os.path.join(
-            self.download_folder, key2 := remove_patch_id(key))))
-        files = sorted(files, key=lambda x: x[1]['lastModified'])
+        files = ((key, key_wo_patch, value) for key, value in self.meta_data.items() if os.path.isfile(os.path.join(
+            self.download_folder, key_wo_patch := remove_patch_id(key))))
+        files = sorted(files, key=lambda x: x[2]['lastModified'])
 
-        for key, _ in files[:-min(self.files_kept, len(files))]:
+        for key, key_wo_patch, _ in files[:-min(self.files_kept, len(files))]:
             try:
-                os.remove(path := os.path.join(self.download_folder, key))
+                os.remove(path := os.path.join(self.download_folder, key_wo_patch))
                 del self.meta_data[key]
                 logging.info(f'Removed {path}')
             except Exception as e:
