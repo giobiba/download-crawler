@@ -1,6 +1,6 @@
 import logging
 from urllib.parse import urlparse
-import os, shutil
+import os
 import json
 from datetime import datetime
 from pathlib import Path
@@ -297,7 +297,15 @@ class Crawler:
 
 
 if __name__ == '__main__':
-    config = json.load(open('config.json'))
+    if len(sys.argv) >= 1:
+        try:
+            config = json.load(open(sys.argv[1]))
+        except FileNotFoundError:
+            config = json.load(open('config.json'))
+    else:
+        config = json.load(open('config.json'))
+
+    exit()
 
     if config.get("logging"):
         try:

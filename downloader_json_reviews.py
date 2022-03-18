@@ -374,8 +374,13 @@ class ReviewCrawler:
 
 
 if __name__ == '__main__':
-    config = json.load(open('config_reviews.json'))
-
+    if len(sys.argv) >= 1:
+        try:
+            config = json.load(open(sys.argv[1]))
+        except FileNotFoundError:
+            config = json.load(open('config_reviews.json'))
+    else:
+        config = json.load(open('config_reviews.json'))
 
     if config.get("logging"):
         try:
