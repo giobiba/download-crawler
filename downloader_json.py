@@ -305,8 +305,6 @@ if __name__ == '__main__':
     else:
         config = json.load(open('config.json'))
 
-    exit()
-
     if config.get("logging"):
         try:
             os.mkdir('logs')
