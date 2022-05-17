@@ -275,7 +275,7 @@ class Crawler:
                 self.meta_data[path] = self.temp_meta_data[path].copy()
                 del self.temp_meta_data[path]
 
-        if self.files_kept is not None:
+        if type(self.files_kept) == int and self.files_kept > 0:
             self.clear_download_folder()
 
         if self.flag:
