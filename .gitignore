@@ -1,5 +1,5 @@
-config.json
-config_reviews.json
 *.log
 __pychache__/
 .idea/
+downloader*.bat
+config*.json
