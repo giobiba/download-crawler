@@ -12,6 +12,10 @@ import subprocess
 
 
 def add_unique_postfix(loc, fn):
+    """
+    Given a filename and a location it checks if the file exists, and if it does it adds a unique postfix
+    If the file doesn't exist it simply return its name
+    """
     path = os.path.join(loc, fn)
 
     if not os.path.exists(path):
@@ -21,7 +25,7 @@ def add_unique_postfix(loc, fn):
 
     make_fn = lambda i: os.path.join(loc, '%s(%d)%s' % (name, i, ext))
 
-    for i in range(2, sys.maxsize):
+    for i in range(1, sys.maxsize):
         uni_fn = make_fn(i)
         if not os.path.exists(uni_fn):
             return os.path.split(uni_fn)[1]
